@@ -1,4 +1,4 @@
-# Machine-Learning-Driven-Brand-Vendor-Optimization
+# Vendor-Insight-360
 
 A data-driven analytics platform designed to help organizations evaluate vendor performance, monitor compliance, and optimize vendor relationships using analytics, automation, and reporting tools.
 
@@ -71,7 +71,7 @@ Monitor system health and track alerts related to vendor performance.
 # Project Structure
 
 ```
-Machine-Learning-Driven-Brand-Vendor-Optimization
+Vendor-Insight-360
 │
 ├── app.py
 ├── run.py
@@ -125,13 +125,13 @@ Machine-Learning-Driven-Brand-Vendor-Optimization
 Clone the repository
 
 ```
-git clone https://github.com/Helloworld880/Machine-Learning-Driven-Brand-Vendor-Optimization.git
+git clone https://github.com/Helloworld880/Vendor-Insight-360.git
 ```
 
 Navigate to the project directory
 
 ```
-cd Machine-Learning-Driven-Brand-Vendor-Optimization
+cd Vendor-Insight-360
 ```
 
 Install dependencies
