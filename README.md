@@ -32,7 +32,7 @@ A Streamlit-based vendor analytics platform for tracking **performance**, **fina
   
 ## Project Structure (full)
 
-```
+.
 ├── app.py
 ├── run.py
 ├── run_api.py
@@ -58,13 +58,13 @@ A Streamlit-based vendor analytics platform for tracking **performance**, **fina
 │   ├── realistic_dataset.py
 │   ├── risk_model.py
 │   ├── vendor_clustering.py
-│   └── ... (other helper modules)
+│   └── ...
 
 ├── enhancements/
 │   ├── benchmarking.py
 │   ├── ml_engine.py
 │   ├── report_generator.py
-│   └── ... (optional/advanced modules)
+│   └── ...
 
 ├── ui_pages/
 │   ├── __init__.py
@@ -94,7 +94,7 @@ A Streamlit-based vendor analytics platform for tracking **performance**, **fina
 
 ├── reports/
 └── generated_reports/
----
+
 
 ## Setup
 
