@@ -33,23 +33,18 @@ A Streamlit-based vendor analytics platform for tracking **performance**, **fina
 ## Project Structure (full)
 
 ```
-<<<<<<< HEAD
-Vendor-Insight-360
-│
-=======
-Vendor - inslight-360
-├── ai_integration.py
->>>>>>> a7071ca (update)
 ├── app.py
-├── create_dataset.bat
-├── DATASET_IMPROVEMENT_PLAN.md
-├── pytest.ini
-├── requirements.txt
 ├── run.py
 ├── run_api.py
 ├── setup.py
+├── requirements.txt
+├── pytest.ini
+├── create_dataset.bat
+├── DATASET_IMPROVEMENT_PLAN.md
+
 ├── tests/
 │   └── test_data_health.py
+
 ├── core_modules/
 │   ├── __init__.py
 │   ├── analytics.py
@@ -63,19 +58,22 @@ Vendor - inslight-360
 │   ├── realistic_dataset.py
 │   ├── risk_model.py
 │   ├── vendor_clustering.py
-│   └── ... (other helpers)
+│   └── ... (other helper modules)
+
 ├── enhancements/
 │   ├── benchmarking.py
 │   ├── ml_engine.py
 │   ├── report_generator.py
-│   └── ... (optional modules)
+│   └── ... (optional/advanced modules)
+
 ├── ui_pages/
 │   ├── __init__.py
 │   ├── ai_page.py
 │   ├── reports_page.py
 │   ├── risk_page.py
 │   └── settings_page.py
-├── Data layer/
+
+├── data_layer/
 │   ├── vendors.csv
 │   ├── performance.csv
 │   ├── financial_metrics.csv
@@ -84,7 +82,8 @@ Vendor - inslight-360
 │   ├── vendor_outcomes.csv
 │   ├── industry_benchmarks.csv
 │   └── vendors.db
-├── WORKFLOWS & AUTOMATION/
+
+├── workflows_automation/
 │   ├── scripts/
 │   │   ├── alert_monitor.py
 │   │   └── report_scheduler.py
@@ -92,10 +91,9 @@ Vendor - inslight-360
 │       ├── issue_escalation.yaml
 │       ├── performance_review.yaml
 │       └── vendor_onboarding.yaml
+
 ├── reports/
 └── generated_reports/
-```
-
 ---
 
 ## Setup
