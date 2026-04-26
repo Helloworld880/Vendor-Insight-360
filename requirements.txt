@@ -5,7 +5,9 @@ scikit-learn==1.6.1
 fastapi==0.115.0
 uvicorn==0.30.6
 anthropic==0.25.0
+plotly==6.0.1
 SQLAlchemy==2.0.40
+PyJWT==2.10.1
 cryptography==44.0.2
 psycopg2-binary==2.9.11
 python-jose==3.3.0
@@ -14,6 +16,16 @@ redis==5.2.1
 bcrypt==4.2.1
 joblib==1.4.2
 python-dotenv==1.1.1
+requests==2.32.3
+typing-extensions==4.13.2
+matplotlib==3.10.1
+reportlab==4.2.5
+xlsxwriter==3.2.2
+openpyxl==3.1.5
+jinja2==3.1.6
+flask==3.1.0
+flask-cors==5.0.1
+schedule==1.2.2
 pytest==8.3.5
 pytest-cov==6.1.0
 ruff==0.11.8
