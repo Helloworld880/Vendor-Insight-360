@@ -17,15 +17,19 @@ def _api_get(path: str, token: str) -> dict[str, Any]:
     return response.json()
 
 
-def _login(username: str, password: str) -> str | None:
-    response = requests.post(
-        f"{API_BASE_URL}/api/v1/login",
-        data={"username": username, "password": password},
-        timeout=REQUEST_TIMEOUT_SECONDS,
-    )
+def _login(username: str, password: str) -> tuple[str | None, str | None]:
+    try:
+        response = requests.post(
+            f"{API_BASE_URL}/api/v1/login",
+            data={"username": username, "password": password},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        return None, f"Unable to reach the backend API at {API_BASE_URL}: {exc}"
+
     if response.status_code != 200:
-        return None
-    return response.json().get("access_token")
+        return None, "Invalid credentials."
+    return response.json().get("access_token"), None
 
 
 def _logout() -> None:
@@ -42,12 +46,13 @@ def _render_login() -> None:
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
     if st.button("Login", type="primary", use_container_width=True):
-        token = _login(username, password)
+        token, error_message = _login(username, password)
         if token:
             st.session_state.token = token
             st.success("Login successful.")
             st.rerun()
-        st.error("Invalid credentials or API unavailable.")
+        st.error(error_message or "Invalid credentials or API unavailable.")
+        st.info("Set `STREAMLIT_API_BASE_URL` in the app environment to your deployed backend URL.")
 
 
 def _to_frame(payload: list[dict[str, Any]]) -> pd.DataFrame:
