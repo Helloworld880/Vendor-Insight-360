@@ -1,53 +1,98 @@
-import hashlib
-import json
+from __future__ import annotations
+
 import logging
 import time
 import uuid
+from contextlib import asynccontextmanager
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from threading import Lock
 from typing import Any
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response, status
+import pandas as pd
+from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
-import pandas as pd
 from pydantic import BaseModel, Field
-from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from config.settings import get_settings
-from database.db import engine, initialize_database
+from database.db import database_ready, get_db_session, initialize_database, wait_for_database
 from database.queries import get_user_by_username
+from services.model_registry import LoadedModel, ModelRegistry, ModelRegistryError
 from services.vendor_service import VendorService
 from utils.logging_setup import setup_logging
 from utils.redis_client import redis_client
+from utils.request_context import request_id_var, user_id_var
 from utils.security import verify_password
 
 
 settings = get_settings()
-setup_logging(settings.LOG_LEVEL)
+setup_logging(settings)
 logger = logging.getLogger(__name__)
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.api_prefix}/login")
 
-app = FastAPI(title=settings.APP_NAME)
-api_v1 = APIRouter(prefix="/api/v1")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/login")
+
+class AppMetrics:
+    def __init__(self) -> None:
+        self.started_at = time.time()
+        self._lock = Lock()
+        self._request_count = 0
+
+    def increment(self) -> None:
+        with self._lock:
+            self._request_count += 1
+
+    def snapshot(self) -> dict[str, float | int]:
+        with self._lock:
+            return {
+                "uptime_seconds": round(time.time() - self.started_at, 3),
+                "request_count": self._request_count,
+            }
+
+
+metrics = AppMetrics()
 vendor_service = VendorService()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[origin.strip() for origin in settings.CORS_ORIGINS.split(",") if origin.strip()],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+model_registry = ModelRegistry()
 
 
-class RefreshTokenRequest(BaseModel):
-    refresh_token: str
+class VendorBase(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    category: str = Field(min_length=1, max_length=100)
+    status: str = Field(default="active", min_length=1, max_length=50)
+    delivery_rate: float = Field(ge=0, le=100)
+    quality_score: float = Field(ge=0, le=100)
+    cost_efficiency: float = Field(ge=0, le=100)
+    on_time_rate: float = Field(ge=0, le=100)
+    cost_variance: float
+    reliability: float = Field(ge=0, le=100)
+    performance_score: float = Field(ge=0, le=100)
+    risk_score: float = Field(ge=0, le=100)
 
 
-class VendorRiskPredictionRequest(BaseModel):
+class VendorCreate(VendorBase):
+    pass
+
+
+class VendorUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    category: str | None = Field(default=None, min_length=1, max_length=100)
+    status: str | None = Field(default=None, min_length=1, max_length=50)
+    delivery_rate: float | None = Field(default=None, ge=0, le=100)
+    quality_score: float | None = Field(default=None, ge=0, le=100)
+    cost_efficiency: float | None = Field(default=None, ge=0, le=100)
+    on_time_rate: float | None = Field(default=None, ge=0, le=100)
+    cost_variance: float | None = None
+    reliability: float | None = Field(default=None, ge=0, le=100)
+    performance_score: float | None = Field(default=None, ge=0, le=100)
+    risk_score: float | None = Field(default=None, ge=0, le=100)
+
+
+class ModelPredictRequest(BaseModel):
     delivery_rate: float = Field(ge=0, le=100)
     quality_score: float = Field(ge=0, le=100)
     cost_efficiency: float = Field(ge=0, le=100)
@@ -57,260 +102,474 @@ class VendorRiskPredictionRequest(BaseModel):
     performance_score: float = Field(ge=0, le=100)
 
 
-@app.on_event("startup")
-def startup_init() -> None:
-    initialize_database()
-    redis_client.get_client().ping()
-    vendor_service.risk_model.load()
-    logger.info("Startup checks complete")
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
 
 
-@app.middleware("http")
-async def request_observability_middleware(request: Request, call_next):
-    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
-    request.state.request_id = request_id
-    started = time.perf_counter()
-    try:
-        response = await call_next(request)
-    except Exception:
-        logger.exception(
-            json.dumps(
-                {
-                    "request_id": request_id,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "endpoint": request.url.path,
-                    "status_code": 500,
-                }
-            )
-        )
-        raise
-    duration_ms = round((time.perf_counter() - started) * 1000, 2)
-    response.headers["X-Request-ID"] = request_id
-    logger.info(
-        json.dumps(
-            {
+class AppError(Exception):
+    status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+    code = "INTERNAL_ERROR"
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.details = details or {}
+
+
+class DatabaseOperationError(AppError):
+    status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+    code = "DATABASE_OPERATION_FAILED"
+
+
+class ModelNotFoundError(AppError):
+    status_code = status.HTTP_404_NOT_FOUND
+    code = "MODEL_NOT_FOUND"
+
+
+class VendorNotFoundError(AppError):
+    status_code = status.HTTP_404_NOT_FOUND
+    code = "VENDOR_NOT_FOUND"
+
+
+class AuthenticationError(AppError):
+    status_code = status.HTTP_401_UNAUTHORIZED
+    code = "AUTHENTICATION_FAILED"
+
+
+class AuthorizationError(AppError):
+    status_code = status.HTTP_403_FORBIDDEN
+    code = "FORBIDDEN"
+
+
+class RateLimitExceededError(AppError):
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
+    code = "RATE_LIMIT_EXCEEDED"
+
+
+class ConflictError(AppError):
+    status_code = status.HTTP_409_CONFLICT
+    code = "RESOURCE_CONFLICT"
+
+
+def error_response(
+    request: Request,
+    status_code: int,
+    code: str,
+    message: str,
+    details: dict[str, Any] | None = None,
+) -> JSONResponse:
+    request_id = getattr(request.state, "request_id", request_id_var.get("-"))
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {
+                "code": code,
+                "message": message,
                 "request_id": request_id,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "endpoint": request.url.path,
-                "status_code": response.status_code,
-                "duration_ms": duration_ms,
+                "details": details or {},
             }
-        )
+        },
     )
-    return response
 
 
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, _: Exception):
-    logger.exception("Unhandled exception for %s", request.url.path)
-    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+def safe_headers(headers: Any) -> dict[str, Any]:
+    allowed = {}
+    for header_name in ("user-agent", "content-type", "x-request-id", "x-forwarded-for"):
+        if header_name in headers:
+            allowed[header_name] = headers.get(header_name)
+    allowed["authorization_present"] = "authorization" in headers
+    return allowed
 
 
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(_: Request, exc: RequestValidationError):
-    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+def create_app() -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        wait_for_database()
+        initialize_database()
+        redis_client.ping()
+        model_registry.ensure_model(settings.default_model_name)
+        logger.info("application.startup.complete", extra={"event": "application.startup.complete"})
+        yield
+
+    app = FastAPI(title=settings.app_name, lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.middleware("http")
+    async def observability_middleware(request: Request, call_next: Callable) -> Response:
+        request_id = request.headers.get("x-request-id", str(uuid.uuid4()))
+        request.state.request_id = request_id
+        request_id_token = request_id_var.set(request_id)
+        user_id_token = user_id_var.set(_extract_user_id_from_headers(request))
+        started = time.perf_counter()
+        metrics.increment()
+        logger.info(
+            "request.started",
+            extra={
+                "event": "request.started",
+                "method": request.method,
+                "path": request.url.path,
+                "headers": safe_headers(request.headers),
+            },
+        )
+        try:
+            _enforce_rate_limit(request)
+            response = await call_next(request)
+        except Exception:
+            logger.exception(
+                "request.failed",
+                extra={
+                    "event": "request.failed",
+                    "method": request.method,
+                    "path": request.url.path,
+                },
+            )
+            raise
+        else:
+            latency_ms = round((time.perf_counter() - started) * 1000, 3)
+            response.headers["X-Request-ID"] = request_id
+            logger.info(
+                "request.completed",
+                extra={
+                    "event": "request.completed",
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": response.status_code,
+                    "latency_ms": latency_ms,
+                },
+            )
+            return response
+        finally:
+            request_id_var.reset(request_id_token)
+            user_id_var.reset(user_id_token)
+
+    @app.exception_handler(AppError)
+    async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
+        logger.error(
+            "application.error",
+            extra={
+                "event": "application.error",
+                "error_code": exc.code,
+                "details": exc.details,
+            },
+        )
+        return error_response(request, exc.status_code, exc.code, exc.message, exc.details)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        return error_response(
+            request,
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "VALIDATION_ERROR",
+            "Request validation failed.",
+            {"issues": exc.errors()},
+        )
+
+    @app.exception_handler(SQLAlchemyError)
+    async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError) -> JSONResponse:
+        logger.exception("database.exception", extra={"event": "database.exception"})
+        return error_response(
+            request,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "DATABASE_OPERATION_FAILED",
+            "Database operation failed.",
+        )
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        logger.exception("unhandled.exception", extra={"event": "unhandled.exception"})
+        return error_response(
+            request,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "INTERNAL_SERVER_ERROR",
+            "Internal server error.",
+        )
+
+    @app.get("/")
+    def root() -> dict[str, str]:
+        return {"message": f"{settings.app_name} is running"}
+
+    @app.post(f"{settings.api_prefix}/login")
+    def login(form_data: OAuth2PasswordRequestForm = Depends(), session: Session = Depends(get_db_session)) -> dict[str, str]:
+        try:
+            user = get_user_by_username(session, form_data.username)
+        except SQLAlchemyError as exc:
+            raise DatabaseOperationError("Unable to authenticate user.") from exc
+        if user is None or not user.is_active or not verify_password(form_data.password, user.password_hash):
+            raise AuthenticationError("Incorrect username or password.")
+        return {
+            "access_token": _create_token(str(user.id), user.username, user.role, "access"),
+            "refresh_token": _create_token(str(user.id), user.username, user.role, "refresh"),
+            "token_type": "bearer",
+        }
+
+    @app.post(f"{settings.api_prefix}/refresh")
+    def refresh_token(payload: RefreshTokenRequest) -> dict[str, str]:
+        decoded = _decode_token(payload.refresh_token)
+        if decoded.get("type") != "refresh":
+            raise AuthenticationError("Invalid refresh token.")
+        return {
+            "access_token": _create_token(
+                str(decoded["user_id"]),
+                str(decoded["sub"]),
+                str(decoded["role"]),
+                "access",
+            ),
+            "token_type": "bearer",
+        }
+
+    @app.get(f"{settings.api_prefix}/vendors")
+    def list_vendors_endpoint(
+        _: dict[str, Any] = Depends(get_current_user),
+        session: Session = Depends(get_db_session),
+    ) -> dict[str, Any]:
+        try:
+            vendors = vendor_service.list_vendors(session)
+            return {"data": vendors, "count": len(vendors)}
+        except RuntimeError as exc:
+            raise DatabaseOperationError(str(exc)) from exc
+
+    @app.post(f"{settings.api_prefix}/vendors", status_code=status.HTTP_201_CREATED)
+    def create_vendor_endpoint(
+        payload: VendorCreate,
+        _: dict[str, Any] = Depends(get_current_user),
+        session: Session = Depends(get_db_session),
+    ) -> dict[str, Any]:
+        try:
+            vendor = vendor_service.create_vendor(session, payload.model_dump())
+            invalidate_vendor_cache()
+            return {"data": vendor}
+        except ValueError as exc:
+            raise ConflictError(str(exc), {"field": "name"}) from exc
+        except RuntimeError as exc:
+            raise DatabaseOperationError(str(exc)) from exc
+
+    @app.get(f"{settings.api_prefix}/vendors/{{vendor_id}}")
+    def get_vendor_endpoint(
+        vendor_id: int,
+        _: dict[str, Any] = Depends(get_current_user),
+        session: Session = Depends(get_db_session),
+    ) -> dict[str, Any]:
+        try:
+            vendor = vendor_service.get_vendor(session, vendor_id)
+        except RuntimeError as exc:
+            raise DatabaseOperationError(str(exc)) from exc
+        if vendor is None:
+            raise VendorNotFoundError(f"Vendor '{vendor_id}' not found.", {"vendor_id": vendor_id})
+        return {"data": vendor}
+
+    @app.put(f"{settings.api_prefix}/vendors/{{vendor_id}}")
+    def update_vendor_endpoint(
+        vendor_id: int,
+        payload: VendorUpdate,
+        _: dict[str, Any] = Depends(get_current_user),
+        session: Session = Depends(get_db_session),
+    ) -> dict[str, Any]:
+        changes = payload.model_dump(exclude_none=True)
+        if not changes:
+            raise AppError("At least one vendor field must be provided.")
+        try:
+            vendor = vendor_service.update_vendor(session, vendor_id, changes)
+        except ValueError as exc:
+            raise ConflictError(str(exc), {"field": "name"}) from exc
+        except RuntimeError as exc:
+            raise DatabaseOperationError(str(exc)) from exc
+        if vendor is None:
+            raise VendorNotFoundError(f"Vendor '{vendor_id}' not found.", {"vendor_id": vendor_id})
+        invalidate_vendor_cache()
+        return {"data": vendor}
+
+    @app.delete(f"{settings.api_prefix}/vendors/{{vendor_id}}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_vendor_endpoint(
+        vendor_id: int,
+        _: dict[str, Any] = Depends(get_current_user),
+        session: Session = Depends(get_db_session),
+    ) -> Response:
+        try:
+            deleted = vendor_service.delete_vendor(session, vendor_id)
+        except RuntimeError as exc:
+            raise DatabaseOperationError(str(exc)) from exc
+        if not deleted:
+            raise VendorNotFoundError(f"Vendor '{vendor_id}' not found.", {"vendor_id": vendor_id})
+        invalidate_vendor_cache()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @app.get(f"{settings.api_prefix}/vendors/performance")
+    def vendor_performance_endpoint(
+        _: dict[str, Any] = Depends(get_current_user),
+        session: Session = Depends(get_db_session),
+    ) -> dict[str, Any]:
+        cache_key = "vendors:performance"
+        try:
+            redis = redis_client.get_client()
+            cached = redis.get(cache_key)
+        except Exception as exc:
+            logger.exception("redis.cache.read.failed", extra={"event": "redis.cache.read.failed"})
+            raise AppError("Redis cache is unavailable.") from exc
+        if cached:
+            return {"data": vendor_service.decode_cache_payload(cached), "cache": "hit"}
+        try:
+            leaderboard = vendor_service.performance_leaderboard(session)
+        except RuntimeError as exc:
+            raise DatabaseOperationError(str(exc)) from exc
+        try:
+            redis.setex(cache_key, settings.cache_ttl_seconds, vendor_service.encode_cache_payload(leaderboard))
+        except Exception as exc:
+            logger.exception("redis.cache.write.failed", extra={"event": "redis.cache.write.failed"})
+            raise AppError("Redis cache is unavailable.") from exc
+        return {"data": leaderboard, "cache": "miss"}
+
+    @app.get(f"{settings.api_prefix}/models/{{model_name}}/versions")
+    def model_versions_endpoint(
+        model_name: str,
+        _: dict[str, Any] = Depends(get_current_user),
+    ) -> dict[str, Any]:
+        versions = model_registry.list_versions(model_name)
+        if not versions:
+            raise ModelNotFoundError(f"No versions found for model '{model_name}'.", {"model_name": model_name})
+        return {"model_name": model_name, "versions": versions}
+
+    @app.post(f"{settings.api_prefix}/models/{{model_name}}/predict")
+    def model_predict_endpoint(
+        model_name: str,
+        payload: ModelPredictRequest,
+        _: dict[str, Any] = Depends(get_current_user),
+    ) -> dict[str, Any]:
+        try:
+            loaded = model_registry.load_latest_model(model_name)
+        except ModelRegistryError as exc:
+            raise ModelNotFoundError(str(exc), {"model_name": model_name}) from exc
+        try:
+            prediction = _predict(loaded, payload)
+        except Exception as exc:
+            raise AppError("Model inference failed.", {"model_name": model_name}) from exc
+        return {
+            "model_name": model_name,
+            "version": loaded.version,
+            "prediction": prediction,
+        }
+
+    @app.get("/health")
+    def health(response: Response) -> dict[str, Any]:
+        db_ok = False
+        redis_ok = False
+        try:
+            db_ok = database_ready()
+        except Exception:
+            logger.exception("healthcheck.database.failed", extra={"event": "healthcheck.database.failed"})
+        try:
+            redis_ok = redis_client.ping()
+        except Exception:
+            logger.exception("healthcheck.redis.failed", extra={"event": "healthcheck.redis.failed"})
+        if not (db_ok and redis_ok):
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {
+            "status": "ok" if db_ok and redis_ok else "degraded",
+            "database": "connected" if db_ok else "disconnected",
+            "redis": "connected" if redis_ok else "disconnected",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    @app.get("/metrics")
+    def metrics_endpoint() -> dict[str, Any]:
+        health_status = {"database": "connected", "redis": "connected"}
+        try:
+            database_ready()
+        except Exception:
+            health_status["database"] = "disconnected"
+        try:
+            redis_client.ping()
+        except Exception:
+            health_status["redis"] = "disconnected"
+        snapshot = metrics.snapshot()
+        snapshot["status"] = health_status
+        return snapshot
+
+    return app
 
 
-def _redis_safe_client():
-    try:
-        return redis_client.get_client()
-    except Exception as exc:
-        logger.critical("Redis unavailable: %s", exc)
-        raise HTTPException(status_code=503, detail="Service unavailable")
+def _predict(loaded_model: LoadedModel, payload: ModelPredictRequest) -> str:
+    features = loaded_model.metadata["features"]
+    frame = pd.DataFrame([payload.model_dump()], columns=features)
+    return str(loaded_model.model.predict(frame)[0])
 
 
-def _enforce_rate_limit(client_key: str) -> None:
-    redis_conn = _redis_safe_client()
-    script = """
-    local current = redis.call('INCR', KEYS[1])
-    if current == 1 then
-      redis.call('EXPIRE', KEYS[1], ARGV[1])
-    end
-    return current
-    """
-    current = redis_conn.eval(script, 1, f"rate_limit:{client_key}", 60)
-    if int(current) > settings.RATE_LIMIT_PER_MINUTE:
-        raise HTTPException(status_code=429, detail="Rate limit exceeded")
-
-
-def _create_token(subject: str, role: str, token_type: str, minutes: int) -> str:
-    issued = datetime.now(timezone.utc)
-    expire = issued + timedelta(minutes=minutes)
-    jti = str(uuid.uuid4())
-    payload = {"sub": subject, "role": role, "type": token_type, "jti": jti, "iat": issued, "exp": expire}
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
-
-
-def _create_access_token(subject: str, role: str) -> str:
-    return _create_token(subject=subject, role=role, token_type="access", minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-
-
-def _create_refresh_token(subject: str, role: str) -> str:
-    return _create_token(subject=subject, role=role, token_type="refresh", minutes=settings.REFRESH_TOKEN_EXPIRE_MINUTES)
+def _create_token(user_id: str, username: str, role: str, token_type: str) -> str:
+    issued_at = datetime.now(timezone.utc)
+    if token_type == "access":
+        expires_at = issued_at + timedelta(minutes=settings.access_token_expire_minutes)
+    else:
+        expires_at = issued_at + timedelta(minutes=settings.refresh_token_expire_minutes)
+    payload = {
+        "user_id": user_id,
+        "sub": username,
+        "role": role,
+        "type": token_type,
+        "iat": int(issued_at.timestamp()),
+        "exp": int(expires_at.timestamp()),
+    }
+    return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
 
 
 def _decode_token(token: str) -> dict[str, Any]:
     try:
-        return jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+        return jwt.decode(token, settings.secret_key, algorithms=[settings.jwt_algorithm])
     except JWTError as exc:
-        raise HTTPException(status_code=401, detail="Invalid or expired token") from exc
+        raise AuthenticationError("Invalid or expired token.") from exc
 
 
-def _is_token_blacklisted(jti: str) -> bool:
-    redis_conn = _redis_safe_client()
-    return bool(redis_conn.exists(f"blacklist:{jti}"))
+def _extract_user_id_from_headers(request: Request) -> str | None:
+    authorization = request.headers.get("authorization")
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        return str(_decode_token(token).get("user_id"))
+    except AuthenticationError:
+        return None
 
 
-def _blacklist_token(jti: str, expires_at_epoch: int) -> None:
-    redis_conn = _redis_safe_client()
-    ttl = max(int(expires_at_epoch - datetime.now(timezone.utc).timestamp()), 1)
-    redis_conn.setex(f"blacklist:{jti}", ttl, "1")
+def _enforce_rate_limit(request: Request) -> None:
+    if request.url.path in {"/health", "/metrics", "/"}:
+        return
+    client_ip = request.client.host if request.client else "unknown"
+    redis = redis_client.get_client()
+    key = f"rate_limit:{client_ip}"
+    pipeline = redis.pipeline()
+    pipeline.incr(key)
+    pipeline.expire(key, settings.rate_limit_window_seconds, nx=True)
+    current_requests, _ = pipeline.execute()
+    if int(current_requests) > settings.rate_limit_per_window:
+        raise RateLimitExceededError(
+            "Rate limit exceeded.",
+            {
+                "limit": settings.rate_limit_per_window,
+                "window_seconds": settings.rate_limit_window_seconds,
+            },
+        )
+
+
+def invalidate_vendor_cache() -> None:
+    try:
+        redis_client.get_client().delete("vendors:performance")
+    except Exception:
+        logger.exception("redis.cache.invalidate.failed", extra={"event": "redis.cache.invalidate.failed"})
 
 
 def get_current_user(token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
     payload = _decode_token(token)
-    jti = str(payload.get("jti"))
-    if _is_token_blacklisted(jti):
-        raise HTTPException(status_code=401, detail="Token revoked")
     if payload.get("type") != "access":
-        raise HTTPException(status_code=401, detail="Invalid token type")
-    username = payload.get("sub")
-    if not username:
-        raise HTTPException(status_code=401, detail="Invalid token payload")
-    return {"username": username, "role": payload.get("role", "viewer"), "jti": jti}
-
-
-def require_admin(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
-    if user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin role required")
-    return user
-
-
-def _cache_key(prefix: str, payload: dict[str, Any]) -> str:
-    hashed = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
-    return f"{prefix}:{hashed}"
-
-
-@app.get("/")
-def root() -> dict[str, str]:
-    return {"message": "Vendor Insight 360 API is running"}
-
-
-@api_v1.post("/login")
-def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()) -> dict[str, str]:
-    client_ip = request.client.host if request.client else "unknown"
-    _enforce_rate_limit(client_ip)
-    user = get_user_by_username(form_data.username)
-    if not user or not user.get("is_active"):
-        raise HTTPException(status_code=401, detail="Incorrect username or password")
-    if not verify_password(form_data.password, str(user["password_hash"])):
-        raise HTTPException(status_code=401, detail="Incorrect username or password")
-    role = str(user.get("role", "viewer"))
+        raise AuthenticationError("Invalid access token.")
     return {
-        "access_token": _create_access_token(form_data.username, role),
-        "refresh_token": _create_refresh_token(form_data.username, role),
-        "token_type": "bearer",
+        "user_id": str(payload["user_id"]),
+        "username": str(payload["sub"]),
+        "role": str(payload["role"]),
     }
 
 
-@api_v1.post("/refresh")
-def refresh_token(payload: RefreshTokenRequest) -> dict[str, str]:
-    decoded = _decode_token(payload.refresh_token)
-    jti = str(decoded.get("jti"))
-    if _is_token_blacklisted(jti):
-        raise HTTPException(status_code=401, detail="Token revoked")
-    if decoded.get("type") != "refresh":
-        raise HTTPException(status_code=401, detail="Invalid token type")
-    username = decoded.get("sub")
-    role = decoded.get("role", "viewer")
-    return {"access_token": _create_access_token(username, role), "token_type": "bearer"}
-
-
-@api_v1.post("/logout")
-def logout(user: dict[str, Any] = Depends(get_current_user), token: str = Depends(oauth2_scheme)) -> dict[str, str]:
-    decoded = _decode_token(token)
-    _blacklist_token(str(user["jti"]), int(decoded.get("exp")))
-    return {"message": "Logged out"}
-
-
-@api_v1.get("/vendors")
-def list_vendors(
-    page: int = 1,
-    limit: int = 20,
-    _: dict[str, Any] = Depends(get_current_user),
-) -> dict[str, Any]:
-    if page < 1 or limit < 1 or limit > 200:
-        raise HTTPException(status_code=400, detail="Invalid pagination parameters")
-    data, pagination = vendor_service.get_vendor_kpis(page=page, limit=limit)
-    return {"data": data.where(data.notna(), None).to_dict("records"), "pagination": pagination}
-
-
-@api_v1.get("/vendors/performance")
-def vendor_performance(
-    page: int = 1,
-    limit: int = 20,
-    _: dict[str, Any] = Depends(get_current_user),
-) -> dict[str, Any]:
-    if page < 1 or limit < 1 or limit > 200:
-        raise HTTPException(status_code=400, detail="Invalid pagination parameters")
-    cache_payload = {"page": page, "limit": limit}
-    key = _cache_key("vendors:performance", cache_payload)
-    try:
-        redis_conn = _redis_safe_client()
-        cached = redis_conn.get(key)
-    except HTTPException:
-        cached = None
-    if cached:
-        return json.loads(cached)
-
-    data, pagination = vendor_service.get_vendor_performance(page=page, limit=limit)
-    response = {"data": data.where(data.notna(), None).to_dict("records"), "pagination": pagination}
-    try:
-        redis_conn = _redis_safe_client()
-        redis_conn.setex(key, settings.CACHE_TTL_SECONDS, json.dumps(response))
-    except HTTPException:
-        logger.error("Caching skipped due to Redis outage")
-    return response
-
-
-@api_v1.get("/vendors/performance/export", response_class=PlainTextResponse)
-def export_vendor_performance(
-    page: int = 1,
-    limit: int = 1000,
-    _: dict[str, Any] = Depends(require_admin),
-) -> str:
-    return vendor_service.export_vendor_performance_csv(page=page, limit=limit)
-
-
-@api_v1.post("/predict/vendor-risk")
-def predict_vendor_risk(
-    payload: VendorRiskPredictionRequest,
-    _: dict[str, Any] = Depends(get_current_user),
-) -> dict[str, str]:
-    frame = vendor_service._calculate_metrics(pd.DataFrame([payload.model_dump()]))
-    prediction = vendor_service.risk_model.predict_risk(frame).iloc[0]
-    return {"risk_prediction": str(prediction)}
-
-
-@app.get("/health")
-def health(response: Response) -> dict[str, str]:
-    db_state = "connected"
-    redis_state = "connected"
-    api_state = "ok"
-    try:
-        with engine.begin() as conn:
-            conn.execute(text("SELECT 1"))
-    except Exception:
-        db_state = "disconnected"
-        api_state = "degraded"
-    try:
-        _redis_safe_client().ping()
-    except Exception:
-        redis_state = "disconnected"
-        api_state = "degraded"
-    if api_state != "ok":
-        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-    return {"status": api_state, "database": db_state, "redis": redis_state}
-
-
-app.include_router(api_v1)
+app = create_app()

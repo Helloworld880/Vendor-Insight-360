@@ -1,87 +1,45 @@
-import pandas as pd
-from sqlalchemy import text
+from __future__ import annotations
 
-from database.db import engine
+from sqlalchemy import desc, select
+from sqlalchemy.orm import Session
 
-
-def get_vendors_page(page: int, limit: int) -> tuple[pd.DataFrame, int]:
-    offset = (page - 1) * limit
-    data_query = text(
-        """
-        SELECT
-            v.id AS vendor_id,
-            v.name AS vendor_name,
-            v.category,
-            v.status,
-            v.delivery_rate,
-            v.quality_score,
-            v.cost_efficiency,
-            v.actual_cost,
-            v.expected_cost,
-            v.on_time_deliveries,
-            v.total_deliveries
-        FROM vendors v
-        ORDER BY v.id
-        LIMIT :limit OFFSET :offset
-        """
-    )
-    count_query = text("SELECT COUNT(*) AS total_records FROM vendors")
-    with engine.begin() as conn:
-        frame = pd.read_sql(data_query, con=conn, params={"limit": limit, "offset": offset})
-        total = conn.execute(count_query).scalar_one()
-    return frame, int(total)
+from database.models import User, Vendor
 
 
-def get_vendor_performance_page(page: int, limit: int) -> tuple[pd.DataFrame, int]:
-    offset = (page - 1) * limit
-    query = text(
-        """
-        WITH scored AS (
-            SELECT
-                v.id AS vendor_id,
-                v.name AS vendor_name,
-                v.category,
-                v.status,
-                v.delivery_rate,
-                v.quality_score,
-                v.cost_efficiency,
-                v.actual_cost,
-                v.expected_cost,
-                v.on_time_deliveries,
-                v.total_deliveries,
-                (v.delivery_rate * 0.4 + v.quality_score * 0.3 + v.cost_efficiency * 0.3) AS performance_score,
-                CASE
-                    WHEN v.total_deliveries = 0 THEN 0
-                    ELSE (v.on_time_deliveries / v.total_deliveries) * 100
-                END AS on_time_rate,
-                (v.actual_cost - v.expected_cost) AS cost_variance
-            FROM vendors v
-        )
-        SELECT
-            *,
-            (on_time_rate * 0.6 + quality_score * 0.4) AS reliability,
-            ROW_NUMBER() OVER (ORDER BY performance_score DESC, vendor_id ASC) AS rank
-        FROM scored
-        ORDER BY performance_score DESC, vendor_id ASC
-        LIMIT :limit OFFSET :offset
-        """
-    )
-    count_query = text("SELECT COUNT(*) AS total_records FROM vendors")
-    with engine.begin() as conn:
-        frame = pd.read_sql(query, con=conn, params={"limit": limit, "offset": offset})
-        total = conn.execute(count_query).scalar_one()
-    return frame, int(total)
+def get_user_by_username(session: Session, username: str) -> User | None:
+    return session.execute(select(User).where(User.username == username)).scalar_one_or_none()
 
 
-def get_user_by_username(username: str) -> dict | None:
-    query = text(
-        """
-        SELECT username, password_hash, is_active, role
-        FROM users
-        WHERE username = :username
-        LIMIT 1
-        """
-    )
-    with engine.begin() as conn:
-        row = conn.execute(query, {"username": username}).mappings().first()
-    return dict(row) if row else None
+def list_vendors(session: Session) -> list[Vendor]:
+    statement = select(Vendor).order_by(Vendor.id.asc())
+    return list(session.execute(statement).scalars().all())
+
+
+def get_vendor(session: Session, vendor_id: int) -> Vendor | None:
+    return session.get(Vendor, vendor_id)
+
+
+def create_vendor(session: Session, payload: dict) -> Vendor:
+    vendor = Vendor(**payload)
+    session.add(vendor)
+    session.commit()
+    session.refresh(vendor)
+    return vendor
+
+
+def update_vendor(session: Session, vendor: Vendor, payload: dict) -> Vendor:
+    for field, value in payload.items():
+        setattr(vendor, field, value)
+    session.commit()
+    session.refresh(vendor)
+    return vendor
+
+
+def delete_vendor(session: Session, vendor: Vendor) -> None:
+    session.delete(vendor)
+    session.commit()
+
+
+def vendor_performance_leaderboard(session: Session) -> list[Vendor]:
+    statement = select(Vendor).order_by(desc(Vendor.performance_score), Vendor.id.asc())
+    return list(session.execute(statement).scalars().all())

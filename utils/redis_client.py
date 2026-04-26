@@ -1,4 +1,5 @@
-import logging
+from __future__ import annotations
+
 import time
 from threading import Lock
 
@@ -7,7 +8,6 @@ import redis
 from config.settings import get_settings
 
 
-logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
@@ -23,36 +23,29 @@ class RedisClient:
                     cls._instance._client = None
         return cls._instance
 
-    def connect(self) -> redis.Redis:
-        if self._client is not None:
-            return self._client
-        retries = 5
-        for attempt in range(1, retries + 1):
-            try:
-                client = redis.Redis.from_url(
-                    settings.REDIS_URL,
-                    socket_connect_timeout=2,
-                    socket_timeout=2,
-                    health_check_interval=30,
-                    decode_responses=True,
-                )
-                client.ping()
-                self._client = client
-                logger.info("Redis connection established")
-                return self._client
-            except Exception as exc:
-                logger.error("Redis connection attempt %s/%s failed: %s", attempt, retries, exc)
-                time.sleep(min(2**attempt, 10))
-        raise RuntimeError("Unable to connect to Redis after retries")
-
     def get_client(self) -> redis.Redis:
-        try:
-            client = self.connect()
-            client.ping()
-            return client
-        except Exception:
-            self._client = None
-            return self.connect()
+        if self._client is None:
+            self._client = redis.Redis.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=2,
+                socket_timeout=2,
+                health_check_interval=30,
+            )
+        return self._client
+
+    def ping(self, max_attempts: int = 10, delay_seconds: int = 1) -> bool:
+        last_error: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return bool(self.get_client().ping())
+            except redis.RedisError as exc:
+                last_error = exc
+                self._client = None
+                if attempt == max_attempts:
+                    break
+                time.sleep(delay_seconds)
+        raise RuntimeError("Redis did not become ready in time.") from last_error
 
 
 redis_client = RedisClient()

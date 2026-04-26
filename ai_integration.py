@@ -10,7 +10,10 @@ import textwrap
 import warnings
 from typing import Optional
 import pandas as pd
-import anthropic
+try:
+    import anthropic
+except ImportError:
+    anthropic = None
 
 warnings.filterwarnings(
     "ignore",
@@ -71,7 +74,11 @@ class AnthropicProvider(AIProvider):
         return message.content[0].text.strip()
 
 
-def _get_client() -> anthropic.Anthropic:
+def _get_client():
+    if anthropic is None:
+        raise ImportError(
+            "The 'anthropic' package is not installed. Add it to requirements.txt or use AI_MODE=mock/ollama."
+        )
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         raise EnvironmentError("ANTHROPIC_API_KEY not found. Add it to your .env file.")
@@ -79,7 +86,7 @@ def _get_client() -> anthropic.Anthropic:
 
 
 def _has_anthropic_key() -> bool:
-    return bool(os.getenv("ANTHROPIC_API_KEY"))
+    return anthropic is not None and bool(os.getenv("ANTHROPIC_API_KEY"))
 
 
 def _call_ollama(system: str, user: str) -> str:
@@ -396,6 +403,8 @@ def _call_claude(system: str, user: str, max_tokens: int = 1024) -> str:
             raise
 
     if mode == "real":
+        if anthropic is None:
+            raise ImportError("AI_MODE is set to 'real' but the 'anthropic' package is not installed.")
         raise EnvironmentError("AI_MODE is set to 'real' but ANTHROPIC_API_KEY is missing.")
 
     LAST_AI_BACKEND = mock_provider.name

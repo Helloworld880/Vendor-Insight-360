@@ -1,83 +1,97 @@
-import logging
-import math
-from io import StringIO
+from __future__ import annotations
 
-import pandas as pd
+import json
+from typing import Any
 
-from database.queries import get_vendor_performance_page, get_vendors_page
-from models.model import VendorRiskModel
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.orm import Session
 
-
-logger = logging.getLogger(__name__)
+from database import queries
+from database.models import Vendor
 
 
 class VendorService:
-    def __init__(self) -> None:
-        self.risk_model = VendorRiskModel()
-        self.risk_model.load()
+    @staticmethod
+    def serialize_vendor(vendor: Vendor) -> dict[str, Any]:
+        return {
+            "id": vendor.id,
+            "name": vendor.name,
+            "category": vendor.category,
+            "status": vendor.status,
+            "delivery_rate": vendor.delivery_rate,
+            "quality_score": vendor.quality_score,
+            "cost_efficiency": vendor.cost_efficiency,
+            "on_time_rate": vendor.on_time_rate,
+            "cost_variance": vendor.cost_variance,
+            "reliability": vendor.reliability,
+            "performance_score": vendor.performance_score,
+            "risk_score": vendor.risk_score,
+            "created_at": vendor.created_at.isoformat() if vendor.created_at else None,
+            "updated_at": vendor.updated_at.isoformat() if vendor.updated_at else None,
+        }
+
+    def list_vendors(self, session: Session) -> list[dict[str, Any]]:
+        try:
+            return [self.serialize_vendor(vendor) for vendor in queries.list_vendors(session)]
+        except SQLAlchemyError as exc:
+            raise RuntimeError("Unable to list vendors.") from exc
+
+    def get_vendor(self, session: Session, vendor_id: int) -> dict[str, Any] | None:
+        try:
+            vendor = queries.get_vendor(session, vendor_id)
+            return self.serialize_vendor(vendor) if vendor else None
+        except SQLAlchemyError as exc:
+            raise RuntimeError("Unable to fetch vendor.") from exc
+
+    def create_vendor(self, session: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            vendor = queries.create_vendor(session, payload)
+            return self.serialize_vendor(vendor)
+        except IntegrityError as exc:
+            session.rollback()
+            raise ValueError("A vendor with this name already exists.") from exc
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise RuntimeError("Unable to create vendor.") from exc
+
+    def update_vendor(self, session: Session, vendor_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
+        try:
+            vendor = queries.get_vendor(session, vendor_id)
+            if vendor is None:
+                return None
+            vendor = queries.update_vendor(session, vendor, payload)
+            return self.serialize_vendor(vendor)
+        except IntegrityError as exc:
+            session.rollback()
+            raise ValueError("A vendor with this name already exists.") from exc
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise RuntimeError("Unable to update vendor.") from exc
+
+    def delete_vendor(self, session: Session, vendor_id: int) -> bool:
+        try:
+            vendor = queries.get_vendor(session, vendor_id)
+            if vendor is None:
+                return False
+            queries.delete_vendor(session, vendor)
+            return True
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise RuntimeError("Unable to delete vendor.") from exc
+
+    def performance_leaderboard(self, session: Session) -> list[dict[str, Any]]:
+        try:
+            rows = [self.serialize_vendor(vendor) for vendor in queries.vendor_performance_leaderboard(session)]
+            for index, row in enumerate(rows, start=1):
+                row["rank"] = index
+            return rows
+        except SQLAlchemyError as exc:
+            raise RuntimeError("Unable to load vendor performance.") from exc
 
     @staticmethod
-    def _calculate_metrics(frame: pd.DataFrame) -> pd.DataFrame:
-        data = frame.copy()
-        data["on_time_rate"] = (
-            (data["on_time_deliveries"].fillna(0) / data["total_deliveries"].replace(0, pd.NA))
-            .fillna(0)
-            .mul(100)
-            .round(2)
-        )
-        data["cost_variance"] = (data["actual_cost"].fillna(0) - data["expected_cost"].fillna(0)).round(2)
-        data["reliability"] = ((data["on_time_rate"] * 0.6) + (data["quality_score"].fillna(0) * 0.4)).round(2)
-        data["performance_score"] = (
-            (data["delivery_rate"].fillna(0) * 0.4)
-            + (data["quality_score"].fillna(0) * 0.3)
-            + (data["cost_efficiency"].fillna(0) * 0.3)
-        ).round(2)
-        return data
+    def encode_cache_payload(payload: list[dict[str, Any]]) -> str:
+        return json.dumps(payload)
 
-    def get_vendor_kpis(self, page: int, limit: int) -> tuple[pd.DataFrame, dict]:
-        source, total_records = get_vendors_page(page=page, limit=limit)
-        if source.empty:
-            return source, {
-                "page": page,
-                "limit": limit,
-                "total_records": total_records,
-                "total_pages": math.ceil(total_records / limit) if limit else 0,
-            }
-
-        enriched = self._calculate_metrics(source)
-        enriched["risk_prediction"] = self.risk_model.predict_risk(enriched)
-        pagination = {
-            "page": page,
-            "limit": limit,
-            "total_records": total_records,
-            "total_pages": math.ceil(total_records / limit) if limit else 0,
-        }
-        return enriched, pagination
-
-    def get_vendor_performance(self, page: int, limit: int) -> tuple[pd.DataFrame, dict]:
-        data, total_records = get_vendor_performance_page(page=page, limit=limit)
-        if data.empty:
-            return data, {
-                "page": page,
-                "limit": limit,
-                "total_records": total_records,
-                "total_pages": math.ceil(total_records / limit) if limit else 0,
-            }
-
-        leaderboard = data.copy()
-        leaderboard["alert"] = leaderboard["performance_score"].apply(
-            lambda score: "low_performance_alert" if score < 60 else "normal"
-        )
-        pagination = {
-            "page": page,
-            "limit": limit,
-            "total_records": total_records,
-            "total_pages": math.ceil(total_records / limit) if limit else 0,
-        }
-        return leaderboard, pagination
-
-    def export_vendor_performance_csv(self, page: int, limit: int) -> str:
-        perf, _ = self.get_vendor_performance(page=page, limit=limit)
-        buffer = StringIO()
-        perf.to_csv(buffer, index=False)
-        return buffer.getvalue()
+    @staticmethod
+    def decode_cache_payload(payload: str) -> list[dict[str, Any]]:
+        return json.loads(payload)
