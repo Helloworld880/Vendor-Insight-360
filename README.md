@@ -148,6 +148,43 @@ docker build -t vendor-insight-360 .
 docker run --env-file .env -p 8000:8000 vendor-insight-360
 ```
 
+## Render Deployment
+
+This repo now includes a Render blueprint in [render.yaml](C:/Users/yashd/Desktop/Vendor%20-%20inslight-360/render.yaml) for:
+
+- one Docker-based FastAPI web service
+- one free Render Postgres database
+- one free Render Key Value instance
+
+The backend now supports Render-native environment variables:
+
+- `PORT` for the web service port
+- `DATABASE_URL` for the Postgres connection string
+- `REDIS_URL` for the Key Value connection string
+
+### Deploy steps
+
+1. Push this repo to GitHub.
+2. In Render, choose `New` -> `Blueprint`.
+3. Select this repository and keep `render.yaml`.
+4. During the first sync, provide values for:
+   - `ADMIN_PASSWORD`
+   - `CORS_ORIGINS`
+
+### Streamlit frontend setup
+
+After Render creates the backend web service, copy its public URL and set this in Streamlit Cloud:
+
+```toml
+STREAMLIT_API_BASE_URL = "https://your-render-service.onrender.com"
+```
+
+Set `CORS_ORIGINS` on the Render web service to your Streamlit app origin, for example:
+
+```text
+https://your-app.streamlit.app
+```
+
 ## Production Notes
 
 - Replace demo credentials in `api/main.py` with real user persistence.

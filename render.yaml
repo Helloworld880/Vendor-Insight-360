@@ -1,0 +1,64 @@
+services:
+  - name: vendor-insight-360-api
+    type: web
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: API_HOST
+        value: 0.0.0.0
+      - key: API_PREFIX
+        value: /api/v1
+      - key: LOG_LEVEL
+        value: INFO
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "120"
+      - key: REFRESH_TOKEN_EXPIRE_MINUTES
+        value: "10080"
+      - key: CACHE_TTL_SECONDS
+        value: "120"
+      - key: RATE_LIMIT_PER_WINDOW
+        value: "120"
+      - key: RATE_LIMIT_WINDOW_SECONDS
+        value: "60"
+      - key: DEFAULT_MODEL_NAME
+        value: vendor_risk
+      - key: DATABASE_URL
+        fromDatabase:
+          name: vendor-insight-360-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: vendor-insight-360-cache
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ADMIN_ROLE
+        value: admin
+      - key: CORS_ORIGINS
+        sync: false
+
+  - name: vendor-insight-360-cache
+    type: keyvalue
+    plan: free
+    region: oregon
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru
+
+databases:
+  - name: vendor-insight-360-db
+    plan: free
+    region: oregon
+    databaseName: vendor_insight

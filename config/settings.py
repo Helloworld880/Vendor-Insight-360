@@ -17,24 +17,47 @@ def _require_env(name: str) -> str:
     return value
 
 
+def _optional_int(name: str, default: int | None = None) -> int | None:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    return int(value)
+
+
 class Settings:
     def __init__(self) -> None:
         self.app_name = os.getenv("APP_NAME", "Vendor Insight 360 API")
         self.app_env = os.getenv("APP_ENV", "development")
         self.api_prefix = os.getenv("API_PREFIX", "/api/v1")
         self.host = os.getenv("API_HOST", "0.0.0.0")
-        self.port = int(os.getenv("API_PORT", "8000"))
-        self.postgres_user = _require_env("POSTGRES_USER")
-        self.postgres_password = _require_env("POSTGRES_PASSWORD")
-        self.postgres_db = _require_env("POSTGRES_DB")
-        self.postgres_test_db = _require_env("POSTGRES_TEST_DB")
-        self.postgres_admin_db = _require_env("POSTGRES_ADMIN_DB")
-        self.postgres_host = _require_env("POSTGRES_HOST")
-        self.postgres_port = int(_require_env("POSTGRES_PORT"))
-        self.redis_host = _require_env("REDIS_HOST")
-        self.redis_port = int(_require_env("REDIS_PORT"))
-        self.redis_db = int(_require_env("REDIS_DB"))
-        self.redis_test_db = int(_require_env("REDIS_TEST_DB"))
+        self.port = int(os.getenv("PORT", os.getenv("API_PORT", "8000")))
+        self.database_url_override = os.getenv("DATABASE_URL")
+        self.admin_database_url_override = os.getenv("ADMIN_DATABASE_URL")
+        self.postgres_user = os.getenv("POSTGRES_USER")
+        self.postgres_password = os.getenv("POSTGRES_PASSWORD")
+        self.postgres_db = os.getenv("POSTGRES_DB")
+        self.postgres_test_db = os.getenv("POSTGRES_TEST_DB", self.postgres_db or "vendor_test_db")
+        self.postgres_admin_db = os.getenv("POSTGRES_ADMIN_DB", "postgres")
+        self.postgres_host = os.getenv("POSTGRES_HOST")
+        self.postgres_port = _optional_int("POSTGRES_PORT")
+        if not self.database_url_override:
+            self.postgres_user = self.postgres_user or _require_env("POSTGRES_USER")
+            self.postgres_password = self.postgres_password or _require_env("POSTGRES_PASSWORD")
+            self.postgres_db = self.postgres_db or _require_env("POSTGRES_DB")
+            self.postgres_test_db = os.getenv("POSTGRES_TEST_DB", _require_env("POSTGRES_TEST_DB"))
+            self.postgres_admin_db = os.getenv("POSTGRES_ADMIN_DB", _require_env("POSTGRES_ADMIN_DB"))
+            self.postgres_host = self.postgres_host or _require_env("POSTGRES_HOST")
+            self.postgres_port = self.postgres_port or int(_require_env("POSTGRES_PORT"))
+        self.redis_url_override = os.getenv("REDIS_URL")
+        self.redis_host = os.getenv("REDIS_HOST")
+        self.redis_port = _optional_int("REDIS_PORT")
+        self.redis_db = _optional_int("REDIS_DB", 0) or 0
+        self.redis_test_db = _optional_int("REDIS_TEST_DB", 1) or 1
+        if not self.redis_url_override:
+            self.redis_host = self.redis_host or _require_env("REDIS_HOST")
+            self.redis_port = self.redis_port or int(_require_env("REDIS_PORT"))
+            self.redis_db = int(os.getenv("REDIS_DB", str(self.redis_db)))
+            self.redis_test_db = int(os.getenv("REDIS_TEST_DB", str(self.redis_test_db)))
         self.secret_key = os.getenv("SECRET_KEY", "replace-with-strong-secret")
         self.jwt_algorithm = os.getenv("JWT_ALGORITHM", "HS256")
         self.access_token_expire_minutes = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "120"))
@@ -84,6 +107,8 @@ class Settings:
 
     @property
     def database_url(self) -> str:
+        if self.database_url_override:
+            return self.database_url_override
         return (
             f"postgresql+psycopg2://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.active_postgres_db}"
@@ -91,6 +116,8 @@ class Settings:
 
     @property
     def admin_database_url(self) -> str:
+        if self.admin_database_url_override:
+            return self.admin_database_url_override
         return (
             f"postgresql+psycopg2://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_admin_db}"
@@ -98,6 +125,8 @@ class Settings:
 
     @property
     def redis_url(self) -> str:
+        if self.redis_url_override:
+            return self.redis_url_override
         return f"redis://{self.redis_host}:{self.redis_port}/{self.active_redis_db}"
 
 

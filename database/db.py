@@ -38,6 +38,8 @@ def initialize_database() -> None:
 
 
 def create_database_if_missing(database_name: str) -> None:
+    if settings.database_url_override:
+        return
     if not DATABASE_NAME_PATTERN.fullmatch(database_name):
         raise ValueError(f"Invalid database name '{database_name}'.")
     admin_engine = create_engine(
@@ -62,7 +64,8 @@ def wait_for_database(max_attempts: int = 10, delay_seconds: int = 2) -> None:
     last_error: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         try:
-            create_database_if_missing(settings.active_postgres_db)
+            if not settings.database_url_override:
+                create_database_if_missing(settings.active_postgres_db)
             with engine.connect() as connection:
                 connection.execute(text("SELECT 1"))
             return
