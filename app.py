@@ -7,6 +7,12 @@ import streamlit as st
 
 
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("STREAMLIT_REQUEST_TIMEOUT_SECONDS", "20"))
+DEFAULT_API_BASE_URL = "http://localhost:8000"
+
+
+def _is_local_api_url(url: str) -> bool:
+    lowered = url.lower()
+    return "localhost" in lowered or "127.0.0.1" in lowered
 
 
 def _get_secret(name: str) -> str | None:
@@ -17,41 +23,36 @@ def _get_secret(name: str) -> str | None:
     return str(value).strip() if value else None
 
 
-def _resolve_api_base_url() -> str:
-    configured = (
-        os.getenv("STREAMLIT_API_BASE_URL")
-        or os.getenv("API_BASE_URL")
-        or _get_secret("STREAMLIT_API_BASE_URL")
-        or _get_secret("API_BASE_URL")
-        or "http://localhost:8000"
-    )
-    return configured.rstrip("/")
-
-
-def _is_local_api_url(url: str) -> bool:
-    lowered = url.lower()
-    return "localhost" in lowered or "127.0.0.1" in lowered
-
-
-API_BASE_URL = _resolve_api_base_url()
+def _get_api_base_url() -> str:
+    if "api_base_url" not in st.session_state:
+        configured = (
+            os.getenv("STREAMLIT_API_BASE_URL")
+            or os.getenv("API_BASE_URL")
+            or _get_secret("STREAMLIT_API_BASE_URL")
+            or _get_secret("API_BASE_URL")
+            or DEFAULT_API_BASE_URL
+        )
+        st.session_state.api_base_url = configured.rstrip("/")
+    return str(st.session_state.api_base_url)
 
 
 def _api_get(path: str, token: str) -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {token}"}
-    response = requests.get(f"{API_BASE_URL}{path}", headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
+    response = requests.get(f"{_get_api_base_url()}{path}", headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
     response.raise_for_status()
     return response.json()
 
 
 def _login(username: str, password: str) -> tuple[str | None, str | None]:
+    api_base_url = _get_api_base_url()
     try:
         response = requests.post(
-            f"{API_BASE_URL}/api/v1/login",
+            f"{api_base_url}/api/v1/login",
             data={"username": username, "password": password},
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
     except requests.RequestException as exc:
-        return None, f"Unable to reach the backend API at {API_BASE_URL}: {exc}"
+        return None, f"Unable to reach the backend API at {api_base_url}: {exc}"
 
     if response.status_code != 200:
         return None, "Invalid credentials."
@@ -64,8 +65,9 @@ def _logout() -> None:
 
 
 def _render_connection_banner() -> None:
-    st.caption(f"API base URL: `{API_BASE_URL}`")
-    if _is_local_api_url(API_BASE_URL):
+    api_base_url = _get_api_base_url()
+    st.caption(f"API base URL: `{api_base_url}`")
+    if _is_local_api_url(api_base_url):
         st.warning(
             "This frontend is still pointed at a local API URL. On Streamlit Cloud, set "
             "`STREAMLIT_API_BASE_URL` or `API_BASE_URL` to your deployed backend URL."
@@ -133,7 +135,7 @@ def _render_model_versions(token: str) -> None:
 
 def _render_health(token: str) -> None:
     st.subheader("Platform Health")
-    response = requests.get(f"{API_BASE_URL}/health", timeout=REQUEST_TIMEOUT_SECONDS)
+    response = requests.get(f"{_get_api_base_url()}/health", timeout=REQUEST_TIMEOUT_SECONDS)
     response.raise_for_status()
     payload = response.json()
     col1, col2, col3 = st.columns(3)
