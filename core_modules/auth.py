@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Dict, Optional
 
-import jwt
+from jose import ExpiredSignatureError, JWTError, jwt
 
 from core_modules.config import Config
 
@@ -93,8 +93,8 @@ class Authentication:
     def verify_token(self, token: str) -> Optional[Dict]:
         try:
             return jwt.decode(token, self.secret_key, algorithms=["HS256"])
-        except jwt.ExpiredSignatureError:
+        except ExpiredSignatureError:
             logger.warning("JWT token expired")
-        except jwt.InvalidTokenError as exc:
+        except JWTError as exc:
             logger.warning("Invalid JWT: %s", exc)
         return None
