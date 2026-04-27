@@ -5,12 +5,18 @@ import pandas as pd
 import requests
 import streamlit as st
 from dotenv import load_dotenv
-
-
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("STREAMLIT_REQUEST_TIMEOUT_SECONDS", "20"))
-DEFAULT_API_BASE_URL = "http://localhost:8000"
 
-load_dotenv(dotenv_path=".env", override=True)
+API_BASE_URL = (
+    os.getenv("API_BASE_URL")
+    or os.getenv("STREAMLIT_API_BASE_URL")
+    or "http://localhost:8000"
+)
+
+# REQUEST_TIMEOUT_SECONDS = int(os.getenv("STREAMLIT_REQUEST_TIMEOUT_SECONDS", "20"))
+# DEFAULT_API_BASE_URL = "http://localhost:8000"
+
+# load_dotenv(dotenv_path=".env", override=True)
 
 def _is_local_api_url(url: str) -> bool:
     lowered = url.lower()
@@ -24,20 +30,17 @@ def _get_secret(name: str) -> str | None:
         return None
     return str(value).strip() if value else None
 
-
 def _get_api_base_url() -> str:
-    if "api_base_url" not in st.session_state:
-        configured = (
-            os.getenv("STREAMLIT_API_BASE_URL")
-            or os.getenv("API_BASE_URL")
-            or _get_secret("STREAMLIT_API_BASE_URL")
-            or _get_secret("API_BASE_URL")
-            or DEFAULT_API_BASE_URL
-        )
-        st.session_state.api_base_url = configured.rstrip("/")
-    return str(st.session_state.api_base_url)
+    configured = (
+        os.getenv("API_BASE_URL")
+        or os.getenv("STREAMLIT_API_BASE_URL")
+        or _get_secret("API_BASE_URL")
+        or _get_secret("STREAMLIT_API_BASE_URL")
+        or "http://localhost:8000"
+    )
 
-
+    st.session_ state.api_base_url = configured.rstrip("/")
+    return st.session_state.api_base_url
 def _api_get(path: str, token: str) -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {token}"}
     response = requests.get(f"{_get_api_base_url()}{path}", headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
