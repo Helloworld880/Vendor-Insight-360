@@ -18,7 +18,7 @@ bcrypt==4.2.1
 joblib==1.4.2
 python-dotenv==1.1.1
 requests==2.32.3
-typing-extensions==4.13.2
+typing-extensions>=4.14.1,<5
 matplotlib==3.10.1
 reportlab==4.2.5
 xlsxwriter==3.2.2
