@@ -41,6 +41,7 @@ def _get_api_base_url() -> str:
 
     st.session_state.api_base_url = configured.rstrip("/")
     return st.session_state.api_base_url
+
 def _api_get(path: str, token: str) -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {token}"}
     response = requests.get(f"{_get_api_base_url()}{path}", headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
