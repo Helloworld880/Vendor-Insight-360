@@ -171,6 +171,22 @@ The backend now supports Render-native environment variables:
    - `ADMIN_PASSWORD`
    - `CORS_ORIGINS`
 
+### If you created a native Python Render service instead of a Blueprint
+
+Use this start command in Render:
+
+```text
+python run_api.py
+```
+
+Do not use:
+
+```text
+gunicorn your_application.wsgi
+```
+
+This project is a FastAPI app wired through [run_api.py](C:/Users/yashd/Desktop/Vendor%20-%20inslight-360/run_api.py), not a Django or Flask WSGI app named `your_application.wsgi`.
+
 ### Streamlit frontend setup
 
 After Render creates the backend web service, copy its public URL and set this in Streamlit Cloud:
