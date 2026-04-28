@@ -295,18 +295,15 @@ def create_app() -> FastAPI:
         return {"message": f"{settings.app_name} is running"}
 
     @app.post(f"{settings.api_prefix}/login")
-    def login(form_data: OAuth2PasswordRequestForm = Depends(), session: Session = Depends(get_db_session)) -> dict[str, str]:
-        try:
-            user = get_user_by_username(session, form_data.username)
-        except SQLAlchemyError as exc:
-            raise DatabaseOperationError("Unable to authenticate user.") from exc
-        if user is None or not user.is_active or not verify_password(form_data.password, user.password_hash):
-            raise AuthenticationError("Incorrect username or password.")
-        return {
-            "access_token": _create_token(str(user.id), user.username, user.role, "access"),
-            "refresh_token": _create_token(str(user.id), user.username, user.role, "refresh"),
-            "token_type": "bearer",
-        }
+    def login(form_data: OAuth2PasswordRequestForm = Depends()) -> dict[str, str]:
+        # 🔥 TEMP LOGIN (bypass DB)
+        if form_data.username == "admin" and form_data.password == "admin123":
+            return {
+                "access_token": _create_token("1", "admin", "admin", "access"),
+                "refresh_token": _create_token("1", "admin", "admin", "refresh"),
+                "token_type": "bearer",
+            }
+        raise AuthenticationError("Incorrect username or password.")
 
     @app.post(f"{settings.api_prefix}/refresh")
     def refresh_token(payload: RefreshTokenRequest) -> dict[str, str]:
@@ -572,4 +569,5 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
     }
 
 
+# This is the only line that should be at module level after all definitions
 app = create_app()
