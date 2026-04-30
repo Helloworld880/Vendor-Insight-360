@@ -15,8 +15,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-import jwt
-from jwt import PyJWTError
+from jose import jwt
+from jose.exceptions import JWTError
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -517,7 +517,7 @@ def _create_token(user_id: str, username: str, role: str, token_type: str) -> st
 def _decode_token(token: str) -> dict[str, Any]:
     try:
         return jwt.decode(token, settings.secret_key, algorithms=[settings.jwt_algorithm])
-    except PyJWTError as exc:
+    except JWTError as exc:
         raise AuthenticationError("Invalid or expired token.") from exc
 
 
