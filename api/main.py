@@ -347,6 +347,31 @@ def create_app() -> FastAPI:
         except RuntimeError as exc:
             raise DatabaseOperationError(str(exc)) from exc
 
+    @app.get(f"{settings.api_prefix}/vendors/performance")
+    def vendor_performance_endpoint(
+        _: dict[str, Any] = Depends(get_current_user),
+        session: Session = Depends(get_db_session),
+    ) -> dict[str, Any]:
+        cache_key = "vendors:performance"
+        try:
+            redis = redis_client.get_client()
+            cached = redis.get(cache_key)
+        except Exception as exc:
+            logger.exception("redis.cache.read.failed", extra={"event": "redis.cache.read.failed"})
+            raise AppError("Redis cache is unavailable.") from exc
+        if cached:
+            return {"data": vendor_service.decode_cache_payload(cached), "cache": "hit"}
+        try:
+            leaderboard = vendor_service.performance_leaderboard(session)
+        except RuntimeError as exc:
+            raise DatabaseOperationError(str(exc)) from exc
+        try:
+            redis.setex(cache_key, settings.cache_ttl_seconds, vendor_service.encode_cache_payload(leaderboard))
+        except Exception as exc:
+            logger.exception("redis.cache.write.failed", extra={"event": "redis.cache.write.failed"})
+            raise AppError("Redis cache is unavailable.") from exc
+        return {"data": leaderboard, "cache": "miss"}
+
     @app.get(f"{settings.api_prefix}/vendors/{{vendor_id}}")
     def get_vendor_endpoint(
         vendor_id: int,
@@ -396,31 +421,6 @@ def create_app() -> FastAPI:
             raise VendorNotFoundError(f"Vendor '{vendor_id}' not found.", {"vendor_id": vendor_id})
         invalidate_vendor_cache()
         return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-    @app.get(f"{settings.api_prefix}/vendors/performance")
-    def vendor_performance_endpoint(
-        _: dict[str, Any] = Depends(get_current_user),
-        session: Session = Depends(get_db_session),
-    ) -> dict[str, Any]:
-        cache_key = "vendors:performance"
-        try:
-            redis = redis_client.get_client()
-            cached = redis.get(cache_key)
-        except Exception as exc:
-            logger.exception("redis.cache.read.failed", extra={"event": "redis.cache.read.failed"})
-            raise AppError("Redis cache is unavailable.") from exc
-        if cached:
-            return {"data": vendor_service.decode_cache_payload(cached), "cache": "hit"}
-        try:
-            leaderboard = vendor_service.performance_leaderboard(session)
-        except RuntimeError as exc:
-            raise DatabaseOperationError(str(exc)) from exc
-        try:
-            redis.setex(cache_key, settings.cache_ttl_seconds, vendor_service.encode_cache_payload(leaderboard))
-        except Exception as exc:
-            logger.exception("redis.cache.write.failed", extra={"event": "redis.cache.write.failed"})
-            raise AppError("Redis cache is unavailable.") from exc
-        return {"data": leaderboard, "cache": "miss"}
 
     @app.get(f"{settings.api_prefix}/models/{{model_name}}/versions")
     def model_versions_endpoint(

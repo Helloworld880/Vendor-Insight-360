@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -11,6 +12,10 @@ load_dotenv(dotenv_path=".env", override=True)
 
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("STREAMLIT_REQUEST_TIMEOUT_SECONDS", "20"))
 DEFAULT_API_BASE_URL = "http://localhost:8000"
+SECRETS_PATHS = (
+    Path.home() / ".streamlit" / "secrets.toml",
+    Path(__file__).resolve().parent / ".streamlit" / "secrets.toml",
+)
 
 
 def _is_local_api_url(url: str) -> bool:
@@ -19,6 +24,8 @@ def _is_local_api_url(url: str) -> bool:
 
 
 def _get_secret(name: str) -> str | None:
+    if not any(path.exists() for path in SECRETS_PATHS):
+        return None
     try:
         value = st.secrets.get(name)
     except Exception:
@@ -75,14 +82,13 @@ def _render_connection_banner() -> None:
     api_base_url = _get_api_base_url()
     st.caption(f"API base URL: `{api_base_url}`")
     if _is_local_api_url(api_base_url):
-        st.warning(
-            "This frontend is still pointed at a local API URL. On Streamlit Cloud, set "
-            "`STREAMLIT_API_BASE_URL` or `API_BASE_URL` to your deployed backend URL."
-        )
+        st.info("Running against your local API. This is expected for localhost development.")
 
 
 def _render_login() -> None:
     st.subheader("Login")
+    if _is_local_api_url(_get_api_base_url()):
+        st.caption("Local default credentials: `admin` / `StrongAdminPass123`")
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
     if st.button("Login", type="primary", use_container_width=True):
@@ -92,7 +98,10 @@ def _render_login() -> None:
             st.success("Login successful.")
             st.rerun()
         st.error(error_message or "Invalid credentials or API unavailable.")
-        st.info("Set `STREAMLIT_API_BASE_URL` in the app environment to your deployed backend URL.")
+        if _is_local_api_url(_get_api_base_url()):
+            st.info("Start the backend first with `python run_api.py`, or launch both together with `python run.py`.")
+        else:
+            st.info("Set `STREAMLIT_API_BASE_URL` in the app environment to your deployed backend URL.")
 
 
 def _to_frame(payload: list[dict[str, Any]]) -> pd.DataFrame:

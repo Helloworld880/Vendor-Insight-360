@@ -33,6 +33,7 @@ class Settings:
         self.port = int(os.getenv("PORT", os.getenv("API_PORT", "8000")))
         self.database_url_override = os.getenv("DATABASE_URL")
         self.admin_database_url_override = os.getenv("ADMIN_DATABASE_URL")
+        self.local_sqlite_path = Path(os.getenv("LOCAL_SQLITE_PATH", "data/vendor_insight_local.db"))
         self.postgres_user = os.getenv("POSTGRES_USER")
         self.postgres_password = os.getenv("POSTGRES_PASSWORD")
         self.postgres_db = os.getenv("POSTGRES_DB")
@@ -40,7 +41,7 @@ class Settings:
         self.postgres_admin_db = os.getenv("POSTGRES_ADMIN_DB", "postgres")
         self.postgres_host = os.getenv("POSTGRES_HOST")
         self.postgres_port = _optional_int("POSTGRES_PORT")
-        if not self.database_url_override:
+        if self.should_use_postgres:
             self.postgres_user = self.postgres_user or _require_env("POSTGRES_USER")
             self.postgres_password = self.postgres_password or _require_env("POSTGRES_PASSWORD")
             self.postgres_db = self.postgres_db or _require_env("POSTGRES_DB")
@@ -53,7 +54,7 @@ class Settings:
         self.redis_port = _optional_int("REDIS_PORT")
         self.redis_db = _optional_int("REDIS_DB", 0) or 0
         self.redis_test_db = _optional_int("REDIS_TEST_DB", 1) or 1
-        if not self.redis_url_override:
+        if self.should_use_external_redis:
             self.redis_host = self.redis_host or _require_env("REDIS_HOST")
             self.redis_port = self.redis_port or int(_require_env("REDIS_PORT"))
             self.redis_db = int(os.getenv("REDIS_DB", str(self.redis_db)))
@@ -98,6 +99,18 @@ class Settings:
         return self.app_env.lower() in {"test", "testing"}
 
     @property
+    def should_use_postgres(self) -> bool:
+        if self.database_url_override:
+            return self.database_url_override.startswith("postgresql")
+        return self.app_env.lower() in {"test", "testing", "production"}
+
+    @property
+    def should_use_external_redis(self) -> bool:
+        if self.redis_url_override:
+            return not self.redis_url_override.startswith("memory://")
+        return self.app_env.lower() in {"test", "testing", "production"}
+
+    @property
     def active_postgres_db(self) -> str:
         return self.postgres_test_db if self.is_test else self.postgres_db
 
@@ -109,6 +122,9 @@ class Settings:
     def database_url(self) -> str:
         if self.database_url_override:
             return self.database_url_override
+        if not self.should_use_postgres:
+            self.local_sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+            return f"sqlite:///{self.local_sqlite_path.as_posix()}"
         return (
             f"postgresql+psycopg2://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.active_postgres_db}"
@@ -118,6 +134,8 @@ class Settings:
     def admin_database_url(self) -> str:
         if self.admin_database_url_override:
             return self.admin_database_url_override
+        if not self.should_use_postgres:
+            return self.database_url
         return (
             f"postgresql+psycopg2://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_admin_db}"
@@ -127,6 +145,8 @@ class Settings:
     def redis_url(self) -> str:
         if self.redis_url_override:
             return self.redis_url_override
+        if not self.should_use_external_redis:
+            return "memory://local"
         return f"redis://{self.redis_host}:{self.redis_port}/{self.active_redis_db}"
 
 

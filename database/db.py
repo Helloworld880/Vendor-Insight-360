@@ -14,13 +14,20 @@ from utils.security import hash_password, verify_password
 
 
 settings = get_settings()
+engine_kwargs = {
+    "future": True,
+    "pool_pre_ping": True,
+}
+if settings.database_url.startswith("sqlite"):
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+
 engine = create_engine(
     settings.database_url,
-    future=True,
-    pool_pre_ping=True,
+    **engine_kwargs,
 )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 DATABASE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]+$")
+IS_SQLITE = engine.dialect.name == "sqlite"
 
 
 def get_db_session() -> Generator[Session, None, None]:
@@ -38,7 +45,7 @@ def initialize_database() -> None:
 
 
 def create_database_if_missing(database_name: str) -> None:
-    if settings.database_url_override:
+    if settings.database_url_override or IS_SQLITE:
         return
     if not DATABASE_NAME_PATTERN.fullmatch(database_name):
         raise ValueError(f"Invalid database name '{database_name}'.")
@@ -64,7 +71,7 @@ def wait_for_database(max_attempts: int = 10, delay_seconds: int = 2) -> None:
     last_error: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         try:
-            if not settings.database_url_override:
+            if not settings.database_url_override and not IS_SQLITE:
                 create_database_if_missing(settings.active_postgres_db)
             with engine.connect() as connection:
                 connection.execute(text("SELECT 1"))

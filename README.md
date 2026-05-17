@@ -8,7 +8,7 @@ FastAPI backend, PostgreSQL data layer, modular service logic, ML risk predictio
 ```text
                         +----------------------+
                         |    Streamlit UI      |
-                        |      app/app.py      |
+                        |        app.py        |
                         +----------+-----------+
                                    |
                                    v
@@ -46,7 +46,8 @@ FastAPI backend, PostgreSQL data layer, modular service logic, ML risk predictio
 
 ```text
 vendor-insight-360/
-├── app/
+├── app.py
+├── frontend/
 │   └── app.py
 ├── api/
 │   └── main.py
@@ -136,8 +137,29 @@ uvicorn api.main:app --reload
 4. Start frontend:
 
 ```bash
-streamlit run app/app.py
+streamlit run app.py
 ```
+
+### Localhost quick start
+
+For a native localhost run, the app now defaults to:
+
+- SQLite at `data/vendor_insight_local.db`
+- in-memory cache/rate limiting instead of Redis
+
+That means you can start the API locally without Docker, Postgres, or Redis:
+
+```bash
+python run_api.py
+```
+
+Then open the frontend in a second terminal:
+
+```bash
+streamlit run app.py
+```
+
+Use Docker Compose when you want the production-style Postgres + Redis stack locally.
 
 ## Docker Deployment
 

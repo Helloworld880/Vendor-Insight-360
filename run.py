@@ -1,109 +1,98 @@
 #!/usr/bin/env python3
-"""
-Project launcher for the current repository layout.
-
-Supported modes:
-- web: start the Streamlit dashboard
-- api: start the Flask API server
-- cli: verify local project initialization
-"""
+from __future__ import annotations
 
 import argparse
-import logging
 import os
 import subprocess
 import sys
+import time
+from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
-from core_modules.database import DatabaseManager
+
+BASE_DIR = Path(__file__).resolve().parent
 
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+def _streamlit_command(host: str, port: int) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "streamlit",
+        "run",
+        str(BASE_DIR / "app.py"),
+        "--server.port",
+        str(port),
+        "--server.address",
+        host,
+    ]
 
 
-class DashboardLauncher:
-    def __init__(self):
-        self.parser = self._build_parser()
-        self.logger = self._setup_logging()
+def _api_command() -> list[str]:
+    return [sys.executable, str(BASE_DIR / "run_api.py")]
 
-    def _setup_logging(self) -> logging.Logger:
-        os.makedirs(os.path.join(BASE_DIR, "logs"), exist_ok=True)
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            handlers=[
-                logging.FileHandler(os.path.join(BASE_DIR, "logs", "application.log")),
-                logging.StreamHandler(sys.stdout),
-            ],
-        )
-        return logging.getLogger(__name__)
 
-    def _build_parser(self) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(description="Vendor Dashboard Launcher")
-        parser.add_argument("--mode", choices=["web", "api", "cli"], default="web")
-        parser.add_argument("--host", default="0.0.0.0", help="Server host")
-        parser.add_argument("--port", type=int, default=8501, help="Server port")
-        parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-        parser.add_argument("--init-db", action="store_true", help="Initialize database")
-        return parser
-
-    def initialize_system(self):
-        self.logger.info("Initializing project database...")
-        DatabaseManager()
-        self.logger.info("Database ready")
-
-    def run_web_dashboard(self):
-        self.logger.info("Starting Streamlit dashboard...")
-        command = [
-            sys.executable,
-            "-m",
-            "streamlit",
-            "run",
-            os.path.join(BASE_DIR, "app.py"),
-            "--server.port",
-            str(self.args.port),
-            "--server.address",
-            self.args.host,
-        ]
-        subprocess.run(command, check=True, cwd=BASE_DIR)
-
-    def run_api_server(self):
-        self.logger.info("Starting Flask API server...")
-        command = [
-            sys.executable,
-            os.path.join(BASE_DIR, "run_api.py"),
-            "--host",
-            self.args.host,
-            "--port",
-            str(self.args.port),
-        ]
-        if self.args.debug:
-            command.append("--debug")
-        subprocess.run(command, check=True, cwd=BASE_DIR)
-
-    def run_cli(self):
-        self.logger.info("CLI mode: project initialization completed successfully.")
-        self.logger.info("Use '--mode web' for Streamlit or '--mode api' for the Flask API.")
-
-    def run(self):
-        self.args = self.parser.parse_args()
-        if self.args.debug:
-            logging.getLogger().setLevel(logging.DEBUG)
-
+def _wait_for_api(base_url: str, timeout_seconds: int = 30) -> bool:
+    deadline = time.time() + timeout_seconds
+    health_url = f"{base_url.rstrip('/')}/health"
+    while time.time() < deadline:
         try:
-            self.initialize_system()
-            if self.args.mode == "web":
-                self.run_web_dashboard()
-            elif self.args.mode == "api":
-                self.run_api_server()
-            else:
-                self.run_cli()
-        except subprocess.CalledProcessError as exc:
-            self.logger.error("Launcher command failed with exit code %s", exc.returncode)
-            raise
-        except Exception as exc:
-            self.logger.error("Application error: %s", exc)
-            raise
+            with urlopen(health_url, timeout=2) as response:
+                if response.status == 200:
+                    return True
+        except URLError:
+            time.sleep(1)
+        except Exception:
+            time.sleep(1)
+    return False
+
+
+def run_api() -> int:
+    return subprocess.call(_api_command(), cwd=BASE_DIR)
+
+
+def run_frontend(host: str, port: int) -> int:
+    return subprocess.call(_streamlit_command(host, port), cwd=BASE_DIR)
+
+
+def run_local(host: str, frontend_port: int) -> int:
+    env = os.environ.copy()
+    api_base_url = env.get("API_BASE_URL", "http://127.0.0.1:8000")
+    print(f"Starting API server at {api_base_url}...")
+    api_process = subprocess.Popen(_api_command(), cwd=BASE_DIR, env=env)
+    try:
+        print("Waiting for API health check...")
+        if not _wait_for_api(api_base_url):
+            print("API did not become ready in time. Stop here and run `python run_api.py` to inspect backend logs.")
+            return 1
+        print(f"API is ready. Starting Streamlit frontend at http://{host}:{frontend_port} ...")
+        return subprocess.call(_streamlit_command(host, frontend_port), cwd=BASE_DIR, env=env)
+    finally:
+        if api_process.poll() is None:
+            print("Stopping API server...")
+            api_process.terminate()
+            try:
+                api_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                api_process.kill()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Vendor Insight 360 local launcher")
+    parser.add_argument("--mode", choices=["local", "api", "frontend"], default="local")
+    parser.add_argument("--host", default="127.0.0.1", help="Frontend bind host")
+    parser.add_argument("--frontend-port", type=int, default=8501, help="Frontend port")
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    if args.mode == "api":
+        return run_api()
+    if args.mode == "frontend":
+        return run_frontend(args.host, args.frontend_port)
+    return run_local(args.host, args.frontend_port)
 
 
 if __name__ == "__main__":
-    DashboardLauncher().run()
+    raise SystemExit(main())
