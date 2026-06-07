@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 
 from sklearn.ensemble import RandomForestRegressor, IsolationForest
-from sklearn.linear_model import LinearRegression
 from sklearn.model_selection import train_test_split
 
 
@@ -81,69 +80,10 @@ class MLEngine:
 
         return df
 
-    # ─────────────────────────────
-    # Churn Prediction
-    # ─────────────────────────────
-    def predict_churn(self):
-
-        df = self.db.get_vendors_with_performance()
-
-        if df.empty:
-            return pd.DataFrame()
-
-        df["churn_probability"] = (100 - df["avg_performance"]) / 100
-
-        df["churn_risk"] = df["churn_probability"].apply(
-            lambda x: "High" if x > 0.6 else "Medium" if x > 0.3 else "Low"
-        )
-
-        return df
-
-    # ─────────────────────────────
-    # Performance Forecast
-    # ─────────────────────────────
-    def forecast_performance(self, months_ahead=6):
-
-        perf = self.db.get_performance_data()
-
-        if perf.empty:
-            return pd.DataFrame()
-
-        perf["metric_date"] = pd.to_datetime(perf["metric_date"])
-
-        results = []
-
-        for vendor in perf["vendor_name"].unique():
-
-            vendor_df = perf[perf["vendor_name"] == vendor].sort_values("metric_date")
-
-            if len(vendor_df) < 3:
-                continue
-
-            X = np.arange(len(vendor_df)).reshape(-1, 1)
-            y = vendor_df["overall_score"]
-
-            model = LinearRegression()
-            model.fit(X, y)
-
-            future = np.arange(len(vendor_df), len(vendor_df) + months_ahead).reshape(-1, 1)
-            preds = model.predict(future)
-
-            future_dates = pd.date_range(
-                vendor_df["metric_date"].max(),
-                periods=months_ahead + 1,
-                freq="M"
-            )[1:]
-
-            for d, p in zip(future_dates, preds):
-
-                results.append({
-                    "vendor_name": vendor,
-                    "forecast_date": d,
-                    "predicted_score": p
-                })
-
-        return pd.DataFrame(results)
+    # NOTE: churn prediction and performance forecasting moved to
+    # core_modules/churn_model.py (supervised, leakage-safe) and
+    # core_modules/forecasting.py (backtested Holt-Winters). The old
+    # heuristics that lived here were rule-based and have been removed.
 
     # ─────────────────────────────
     # Anomaly Detection

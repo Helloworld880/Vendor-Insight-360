@@ -1,13 +1,5 @@
 import streamlit as st
-import ai_integration as ai_tools
-from ai_integration import (
-    ReportSummaryGenerator,
-    SmartAlertEngine,
-    VendorDataChat,
-    streamlit_chat_widget,
-)
 import pandas as pd
-import textwrap
 
 st.set_page_config(
     page_title="ML Vendor Optimization Platform",
@@ -33,6 +25,7 @@ from core_modules.database import DatabaseManager
 from core_modules.analytics import AnalyticsEngine
 from core_modules.config import Config
 from ui_pages.ai_page import render_ai_workspace as render_ai_workspace_page
+from ui_pages.analytics_lab import render_analytics_lab as render_analytics_lab_page
 from ui_pages.reports_page import render_reports as render_reports_page
 from ui_pages.risk_page import render_risk_management as render_risk_management_page
 from ui_pages.settings_page import render_settings as render_settings_page
@@ -241,6 +234,24 @@ class VendorDashboard:
         if self._report_gen is None and _REPORT_AVAILABLE and ReportGenerator:
             self._report_gen = ReportGenerator(self.db)
         return self._report_gen
+
+    def _churn_predictor(self):
+        """Train (once per session) the supervised churn model on labelled outcomes."""
+        from core_modules.churn_model import ChurnPredictor
+
+        @st.cache_resource(show_spinner=False)
+        def _train():
+            outcomes = self.db.get_vendor_outcomes()
+            performance = self.db.get_performance_data()
+            financial = self.db.get_financial_data()
+            risk = self.db.get_risk_history()
+            if outcomes.empty or performance.empty:
+                return None, None
+            predictor = ChurnPredictor()
+            metrics = predictor.train(outcomes, performance, financial, risk)
+            return predictor, metrics
+
+        return _train()
 
     # ── Session ──────────────────────────────────────────────────────────────
     def _init_session(self):
@@ -562,6 +573,9 @@ class VendorDashboard:
     def render_ai_workspace(self):
         render_ai_workspace_page(self)
 
+    def render_analytics_lab(self):
+        render_analytics_lab_page(self.db)
+
     # ─────────────────────────────────────────────────────────────────────────
     # SIDEBAR
     # ─────────────────────────────────────────────────────────────────────────
@@ -610,6 +624,7 @@ class VendorDashboard:
                 "📋 Compliance",
                 "🧠 AI Insights",
                 "🤖 ML Predictions",
+                "🔬 Analytics Lab",
                 "📄 Reports",
                 "🏢 Vendor Portal",
                 "⚙️ Settings",
@@ -973,8 +988,12 @@ class VendorDashboard:
 
             # ── Tab 1: Risk Predictions ──────────────────────────────────────────
             with tab1:
-                st.subheader("🎯 ML-Predicted Risk Labels")
-                st.caption("Random Forest classifier trained on performance, financial, and operational features.")
+                st.subheader("🎯 Weighted Risk Scoring")
+                st.caption(
+                    "Transparent weighted score over performance, defect rate and "
+                    "on-time delivery — a rule-based screen, not a trained model. "
+                    "For the trained churn classifier see the Churn tab."
+                )
                 with st.spinner("Running risk model…"):
                     risk_pred = to_df(ml.predict_vendor_risks())
 
@@ -1022,85 +1041,123 @@ class VendorDashboard:
 
             # ── Tab 2: Churn Probability ─────────────────────────────────────────
             with tab2:
-                st.subheader("📉 Vendor Churn Probability")
-                st.caption("Gradient Boosting Regressor predicts likelihood of vendor churn (0 = low, 1 = high).")
+                st.subheader("📉 Vendor Churn Prediction")
+                st.caption(
+                    "Supervised classifier trained on labelled churn outcomes. "
+                    "Features (performance, escalations, financials, risk) come from "
+                    "quarter t; the target is churn in quarter t+1 — no leakage. "
+                    "Evaluated on held-out recent quarters."
+                )
                 outcomes = to_df(self.db.get_vendor_outcomes())
                 if not outcomes.empty:
-                    st.markdown("**Connected business outcomes dataset**")
                     latest_outcomes = outcomes.sort_values("period").drop_duplicates("vendor_id", keep="last")
                     o1, o2, o3, o4 = st.columns(4)
                     o1.metric("Renewed Contracts", int((latest_outcomes["contract_renewed"] == 1).sum()))
-                    o2.metric("Churned Vendors", int((latest_outcomes["churned"] == 1).sum()))
+                    o2.metric("Churned Vendors", int((outcomes.groupby("vendor_id")["churned"].max() == 1).sum()))
                     o3.metric("Escalations", int((latest_outcomes["escalation_flag"] == 1).sum()))
                     o4.metric("SLA Breaches", int((latest_outcomes["sla_breach_flag"] == 1).sum()))
-                    st.dataframe(
-                        latest_outcomes[["vendor_name", "period", "contract_renewed", "churned", "escalation_flag", "relationship_health"]].head(15),
-                        use_container_width=True,
+
+                with st.spinner("Training churn model on labelled outcomes…"):
+                    predictor, churn_metrics = self._churn_predictor()
+
+                if predictor is None:
+                    st.info("Not enough labelled outcome data to train the churn model.")
+                else:
+                    st.markdown("**Model card** — honest numbers, not vanity metrics:")
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Test ROC-AUC", f"{churn_metrics.roc_auc:.3f}",
+                              help="Discrimination on held-out quarters; 0.5 = coin flip")
+                    m2.metric("CV AUC (train)", f"{churn_metrics.cv_auc_mean:.2f} ± {churn_metrics.cv_auc_std:.2f}",
+                              help="GroupKFold by vendor on training quarters")
+                    m3.metric("Base churn rate", f"{churn_metrics.base_churn_rate:.1%}",
+                              help="Churn is a rare event — accuracy would be misleading")
+                    m4.metric("Model", churn_metrics.model_name.replace("_", " ").title())
+                    st.caption(
+                        "⚠️ Probabilities are class-weight adjusted: use them to *rank* "
+                        "vendors, not as calibrated likelihoods."
                     )
-                with st.spinner("Running churn model…"):
-                    churn = to_df(ml.predict_churn())
 
-                if not churn.empty:
-                    k1, k2, k3 = st.columns(3)
-                    k1.metric("High Churn Risk",   int((churn["churn_risk"] == "High").sum()))
-                    k2.metric("Medium Churn Risk",  int((churn["churn_risk"] == "Medium").sum()))
-                    k3.metric("Avg Churn Prob",     f"{churn['churn_probability'].mean():.2f}")
-
+                    scored = predictor.predict_current(to_df(self.db.get_vendors()))
                     col1, col2 = st.columns(2)
                     with col1:
-                        fig = px.bar(churn.sort_values("churn_probability", ascending=False).head(15),
-                                    x="churn_probability", y="name", orientation="h",
+                        top = scored.head(15)
+                        fig = px.bar(top, x="churn_probability", y="vendor_name", orientation="h",
                                     color="churn_risk",
                                     color_discrete_map={"High": "#ef4444", "Medium": "#f59e0b", "Low": "#22c55e"},
-                                    title="Top 15 Vendors by Churn Probability",
-                                    labels={"churn_probability": "Churn Probability", "name": ""})
+                                    title="Top 15 Vendors by Churn Risk (next quarter)",
+                                    labels={"churn_probability": "Churn Score", "vendor_name": ""})
                         fig.update_layout(yaxis={"categoryorder": "total ascending"})
                         st.plotly_chart(fig, use_container_width=True)
                     with col2:
-                        fig = px.histogram(churn, x="churn_probability", nbins=15,
-                                        color="churn_risk",
-                                        color_discrete_map={"High": "#ef4444", "Medium": "#f59e0b", "Low": "#22c55e"},
-                                        title="Churn Probability Distribution",
-                                        labels={"churn_probability": "Churn Probability"})
+                        imp = predictor.feature_importance().head(8)
+                        fig = px.bar(imp, x="importance", y="feature", orientation="h",
+                                    title="What drives churn risk (feature importance)",
+                                    labels={"importance": "Importance", "feature": ""})
+                        fig.update_layout(yaxis={"categoryorder": "total ascending"})
                         st.plotly_chart(fig, use_container_width=True)
 
-                    st.dataframe(churn.round(3), use_container_width=True)
-                else:
-                    st.info("No churn predictions available.")
+                    if "value_at_risk" in scored.columns:
+                        exposure = scored.head(10)["value_at_risk"].sum()
+                        st.warning(
+                            f"💰 **Business impact:** the 10 highest-risk vendors represent "
+                            f"~${exposure:,.0f} of churn-weighted contract value. "
+                            "Proactive QBRs with this list is where the model pays for itself."
+                        )
+
+                    st.dataframe(scored.round(3), use_container_width=True)
 
             # ── Tab 3: Performance Forecast ──────────────────────────────────────
             with tab3:
                 st.subheader("📈 6-Month Performance Forecast")
-                st.caption("Linear Regression trend extrapolation per vendor using historical performance data.")
-                with st.spinner("Generating forecasts…"):
-                    forecast = to_df(ml.forecast_performance(months_ahead=6))
+                st.caption(
+                    "Holt-Winters exponential smoothing, validated by a rolling-origin "
+                    "backtest against a naive (last value) baseline. A forecast only "
+                    "earns trust by beating that baseline."
+                )
+                from core_modules.forecasting import forecast_scores
 
-                if not forecast.empty:
-                    # Vendor selector
-                    vendors_fcast = forecast["vendor_name"].unique().tolist()
-                    sel_vendors = st.multiselect("Select Vendors to Compare",
-                                                vendors_fcast, default=vendors_fcast[:5])
-                    fcast_filt = forecast[forecast["vendor_name"].isin(sel_vendors)] if sel_vendors else forecast
-
-                    forecast["forecast_date"] = pd.to_datetime(forecast["forecast_date"])
-                    fig = px.line(fcast_filt, x="forecast_date", y="predicted_score",
-                                color="vendor_name", markers=True,
-                                title="6-Month Performance Forecast by Vendor",
-                                labels={"predicted_score": "Predicted Score (%)",
-                                        "forecast_date": "Date"})
-                    fig.add_hline(y=70, line_dash="dot", line_color="red",
-                                annotation_text="Performance Threshold (70%)")
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    # Summary table
-                    fcast_summary = forecast.groupby("vendor_name").agg(
-                        min_forecast=("predicted_score", "min"),
-                        max_forecast=("predicted_score", "max"),
-                        avg_forecast=("predicted_score", "mean"),
-                    ).reset_index().round(2)
-                    st.dataframe(fcast_summary, use_container_width=True)
+                perf = to_df(self.db.get_performance_data())
+                if perf.empty:
+                    st.info("Not enough historical data for forecasts.")
                 else:
-                    st.info("Not enough historical data for forecasts. Need at least 3 months of data per vendor.")
+                    scope = st.selectbox(
+                        "Forecast scope",
+                        ["Portfolio average"] + sorted(perf["vendor_name"].dropna().unique().tolist()),
+                    )
+                    vendor = None if scope == "Portfolio average" else scope
+                    try:
+                        with st.spinner("Backtesting and fitting model…"):
+                            result = forecast_scores(perf, vendor_name=vendor, horizon=6)
+                    except ValueError as exc:
+                        st.info(str(exc))
+                    else:
+                        b1, b2, b3 = st.columns(3)
+                        b1.metric("Backtest MAPE (model)", f"{result.mape_model:.2f}%")
+                        b2.metric("Backtest MAPE (naive)", f"{result.mape_naive:.2f}%")
+                        b3.metric("Beats naive baseline", "✅ Yes" if result.beats_naive else "❌ No",
+                                  help=f"Rolling-origin, {result.backtest_points} one-step folds")
+
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(
+                            x=result.history["forecast_date"], y=result.history["actual_score"],
+                            name="History", mode="lines", line={"color": "#3b82f6"}))
+                        fig.add_trace(go.Scatter(
+                            x=result.forecast["forecast_date"], y=result.forecast["predicted_score"],
+                            name="Forecast", mode="lines+markers", line={"color": "#f59e0b"}))
+                        fig.add_trace(go.Scatter(
+                            x=pd.concat([result.forecast["forecast_date"],
+                                         result.forecast["forecast_date"][::-1]]),
+                            y=pd.concat([result.forecast["upper"], result.forecast["lower"][::-1]]),
+                            fill="toself", fillcolor="rgba(245,158,11,0.15)",
+                            line={"width": 0}, name="95% interval", showlegend=True))
+                        fig.update_layout(
+                            title=f"{scope}: 6-month forecast ({result.method})",
+                            yaxis_title="Performance score")
+                        fig.add_hline(y=70, line_dash="dot", line_color="red",
+                                    annotation_text="Performance Threshold (70%)")
+                        st.plotly_chart(fig, use_container_width=True)
+
+                        st.dataframe(result.forecast.round(2), use_container_width=True, hide_index=True)
 
             # ── Tab 4: Anomaly Detection ──────────────────────────────────────────
             with tab4:
@@ -1262,6 +1319,7 @@ An intelligent vendor analytics platform delivering real-time visibility, risk i
                 "📋 Compliance":         self.render_compliance,
                 "🧠 AI Insights":        self.render_ai_workspace,
                 "🤖 ML Predictions":     self.render_ml_predictions,
+                "🔬 Analytics Lab":      self.render_analytics_lab,
                 "📄 Reports":            self.render_reports,
                 "🏢 Vendor Portal":      self.render_vendor_portal,
                 "⚙️ Settings":           self.render_settings,
