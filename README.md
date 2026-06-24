@@ -12,7 +12,7 @@
 
 A full-stack analytics platform for managing a **120-vendor portfolio** across performance, financials, risk, and compliance — built with a supervised churn model, backtested forecasting, statistical hypothesis testing, and cohort/funnel analysis on a realistic 24-month demo dataset.
 
-[View Repository](https://github.com/Helloworld880/Vendor-Insight-360) · [Quick Start](#quick-start) · [Methodology](#methodology)
+[View Repository](https://github.com/Helloworld880/Vendor-Insight-360) · [Quick Start](#-quick-start) · [Methodology](#-methodology)
 
 </div>
 
@@ -27,23 +27,30 @@ A full-stack analytics platform for managing a **120-vendor portfolio** across p
 ## 📸 Screenshots
 
 ### Vendor Performance Overview
-![Vendor Performance Overview](screenshots/overview.png)
+![Vendor Performance Overview](https://raw.githubusercontent.com/Helloworld880/Vendor-Insight-360/main/Screenshot%202026-04-18%20140950.png)
 
 The main dashboard displays portfolio-wide KPIs at a glance — total vendors, active vendor count, average performance score, high-risk flags, total contract value, and cost savings. The **Top Vendors by Contract Value** chart is color-coded by risk level, alongside a **24-month Performance Trend** line chart.
 
 ---
 
 ### Compliance Management
-![Compliance Management](screenshots/compliance.png)
+![Compliance Management](https://raw.githubusercontent.com/Helloworld880/Vendor-Insight-360/main/Screenshot%202026-04-18%20141040.png)
 
-Tracks compliance status across all 120 vendors with a donut chart breakdown (Compliant / Under Review / Non-Compliant), per-vendor audit scores, and an **Upcoming Audits** calendar table showing the next 90 days of scheduled reviews with certifications (GDPR, HIPAA, ISO 9001, SOC 2).
+Tracks compliance status across all 120 vendors with a donut chart breakdown (Compliant / Under Review / Non-Compliant), per-vendor audit scores, and an **Upcoming Audits** table showing the next 90 days of scheduled reviews with certifications (GDPR, HIPAA, ISO 9001, SOC 2).
 
 ---
 
 ### Risk Review Pack & Reports
-![Risk Review Pack](screenshots/reports.png)
+![Risk Review Pack](https://raw.githubusercontent.com/Helloworld880/Vendor-Insight-360/main/Screenshot%202026-04-18%20141107.png)
 
 Generates a business-ready **Decision Pack** for leadership review — including a narrative leadership brief, recommended actions, and downloadable reports in PDF or Excel format. Previously generated reports are listed with file size and creation timestamp.
+
+---
+
+### Analytics Lab
+![Analytics Lab](https://raw.githubusercontent.com/Helloworld880/Vendor-Insight-360/main/Screenshot%202026-04-28%20002407.png)
+
+Advanced analytics workspace featuring statistical hypothesis testing, cohort retention matrices, lifecycle funnel analysis, and vendor segmentation — all with effect sizes and honest null results.
 
 ---
 
